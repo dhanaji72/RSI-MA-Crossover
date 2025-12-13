@@ -25,6 +25,70 @@ A Node.js-based server that connects to **Finvasia's Market Connect Protocol (MC
 
 More features and modules will be added progressively.
 
+## **Nifty RSI Trading Strategy**
+
+This repository includes a live NIFTY 50 options trading strategy that uses the 14-period Wilder RSI and a 21-period EMA of the RSI (RSI_EMA) measured on 5-minute bars.
+
+- **Goal:** Trade NIFTY options (NFO) when RSI crosses its smoothed EMA on 5-minute candles.
+
+- **Indicators:** RSI length = 14, RSI_EMA length = 21 (Wilder smoothing for RSI; standard EMA for RSI_EMA).
+
+- **Data source:** Yahoo Finance via the `yahoo-finance2` package (wrapped in `src/services/stocks/yahoo.ts`).
+
+- **Exchange / instruments:** Strategy focuses on NIFTY options on the NFO exchange and only considers the nearest/current expiry option strikes.
+
+- **Order logic:** On a bullish cross (RSI crosses above RSI_EMA) the bot places a CE buy order; on a bearish cross (RSI crosses below RSI_EMA) it places a PE buy order. It selects an option whose LTP is close to the configured premium (default: ₹180) and places target & stop orders.
+
+- **Target/Stop:** Target profit = +20% from entry; Stop loss = -5% from entry (configurable in `src/strategies/nifty-rsi-trader.ts`).
+
+- **Exit handling:** On opposite signal, the bot cancels target/stop GTTs and squares off the existing position.
+
+
+**Key files & modules**
+- `src/strategies/nifty-rsi-trader.ts`: Main strategy loop, 5-minute boundary alignment, pre-configured constants (RSI/EMA lengths, target premium). [See file](src/strategies/nifty-rsi-trader.ts)
+- `src/strategies/lib/indicators.ts`: Implements the Wilder RSI and EMA calculation used by the strategy. [See file](src/strategies/lib/indicators.ts)
+- `src/services/stocks/yahoo.ts`: Yahoo wrapper that calls `yahoo-finance2` `chart()` API and returns OHLC bars. [See file](src/services/stocks/yahoo.ts)
+- `src/services/stocks/stocklist.ts`: Option chain and quotes lookup used to find option instruments (restricted to `NFO` exchange & `NIFTY` instruments). [See file](src/services/stocks/stocklist.ts)
+- `src/strategies/lib/order-handler.ts`: Contains `placeEntryAndGTT` and `cancelGttAndSquareOff` helpers using Shoonya order APIs. [See file](src/strategies/lib/order-handler.ts)
+- `src/strategies/scenarios/bullish.ts` and `src/strategies/scenarios/bearish.ts`: Encapsulate strategy behavior for bullish/bearish entry logic. [See files](src/strategies/scenarios/bullish.ts) [See file](src/strategies/scenarios/bearish.ts)
+
+**Configuration & Environment**
+- The strategy uses Shoonya (Finvasia) account credentials available via `.env` keys: `ID`, `PASSWORD`, `VENDOR_KEY`, `IMEI`, `API_KEY`, and `TOTP`. Add them to `.env` in the root of the workspace.
+- Verify `merged_instruments.json` is available in the project (used for local option chains); otherwise `getStockList` will call MCP API.
+- The constants used by the strategy (RSI length `RSI_LENGTH`, RSI_EMA length `RSI_EMA_LENGTH`, target premium `TARGET_PREMIUM`, exchange `EXCHANGE`) can be modified in `src/strategies/nifty-rsi-trader.ts`.
+
+**Running the strategy**
+1. Build the project and start the server (auto-starts the strategy when the MCP server begins):
+
+```bash
+npm run build
+npm start
+```
+
+2. Or run the strategy directly (useful for quick debugging or dev):
+
+```bash
+npm run rsi:trade
+```
+
+**Behavior & Safety**
+- The strategy is live by default and will attempt to place real orders. Please use a test/pre-production account or reduce lot sizes while debugging. You are responsible for risk management.
+- Always confirm the following before running in production: credentials & TOTP are correct, sufficient margin, and correct `merged_instruments.json` is accessible.
+- Logs are printed to the console — monitor them for order confirmations, target/stop acceptance, or errors.
+
+**Notes & Considerations**
+- The strategy restricts options to NIFTY options on the NFO exchange and only considers the nearest expiry (current week or month depending on availability).
+- Option selection is a heuristic: it looks for an option whose LTP is closest to `TARGET_PREMIUM` within a window of strikes. Adjust strike window or target premium as needed.
+- GTT semantics differ across brokers. The current approach places target & stop as separate orders using Shoonya endpoints; if your platform supports formal GTT creation, adapt `src/strategies/lib/order-handler.ts` accordingly.
+- Validate the indicator values with a trusted reference (e.g., TradingView or Zerodha) before going live.
+
+**Troubleshooting**
+- If the strategy fails to find options or returns empty lists: run `node src/updateInstruments.ts` to refresh `merged_instruments.json` and ensure that the `NFO` instruments are present.
+- If Yahoo returns insufficient bars for 5-minute candles, the strategy attempts fallback ranges (7d/3d/1d). If insufficient history remains, the strategy logs a warning and waits for the next candle.
+- `getQuotes` and `getStockList` call the MCP API; if authentication fails, make sure `.env` values are correct and TOTP works.
+
+If you want help creating a safer sandbox or adding a simulated dry-run mode, I can add a configuration option or mock order handler for testing.
+
 ## 🛠️ Tech Stack
 
 - **Backend**: Node.js

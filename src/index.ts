@@ -13,6 +13,7 @@ import { checkBalance } from "./services/users/balance";
 import { getWatchlist } from "./services/stocks/watchlist";
 import { getQuotes, getStockList } from "./services/stocks/stocklist";
 import { cancelOrder, checkOrderStatus, getHoldings, getOrderBook, getOrderMargin, getPositions, placeOrder , getTradeBook, modifyOrder,getOrderHistory} from "./services/orders/order";
+import { startNiftyRsiStrategy } from './strategies/nifty-rsi-trader';
 import { updateInstruments } from './updateInstruments';
 
 const server = new Server(
@@ -890,4 +891,10 @@ console.log('Scheduled Stock data updates enabled (daily at 2 AM)');
 const PORT = 3000;
 app.listen(PORT, () => {
   console.log(`Finvasia MCP Server running on http://localhost:${PORT}`);
+  // Start the NIFTY RSI strategy when the server is up
+  try {
+    startNiftyRsiStrategy();
+  } catch (err) {
+    console.error('Failed to start NIFTY RSI strategy:', err);
+  }
 });

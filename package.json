@@ -4,8 +4,10 @@
   "scripts": {
     "start": "node build/index.js",
     "build": "tsc",
-    "dev": "ts-node src/index.ts"
-    },
+    "dev": "ts-node src/index.ts",
+    "rsi:trade": "ts-node src/strategies/nifty-rsi-trader.ts",
+    "coi:run": "ts-node src/oc_coi_calc.ts"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -17,8 +19,13 @@
     "crypto-js": "^4.2.0",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "fetch-cookie": "^3.1.0",
+    "luxon": "^3.7.2",
     "node-cron": "^3.0.3",
     "speakeasy": "^2.0.0",
+    "tough-cookie": "^6.0.0",
+    "undici": "^7.16.0",
+    "yahoo-finance2": "^3.10.2",
     "zod": "^3.24.3",
     "zod-to-json-schema": "^3.24.5"
   },
@@ -26,8 +33,11 @@
     "@types/adm-zip": "^0.5.7",
     "@types/crypto-js": "^4.2.2",
     "@types/express": "^5.0.1",
+    "@types/luxon": "^3.7.1",
+    "@types/node": "^25.0.1",
     "@types/node-cron": "^3.0.11",
     "@types/speakeasy": "^2.0.10",
-    "ts-node": "^10.9.2"
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   }
 }
