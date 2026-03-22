@@ -25,9 +25,13 @@ A Node.js-based server that connects to **Finvasia's Market Connect Protocol (MC
 
 More features and modules will be added progressively.
 
-## **Nifty RSI Trading Strategy**
+## 📊 **NIFTY 50 RSI/EMA Trading Strategy**
 
-This repository includes a live NIFTY 50 options trading strategy that uses the 14-period Wilder RSI and a 21-period EMA of the RSI (RSI_EMA) measured on 5-minute bars.
+This repository includes a fully automated NIFTY 50 index trading strategy that uses technical indicators (RSI and RSI-EMA) to generate trading signals for options trading on the NFO exchange.
+
+### **Strategy Overview**
+
+The strategy monitors NIFTY 50 index in real-time using 5-minute candles and executes trades based on RSI (Relative Strength Index) and its EMA crossovers.
 
 - **Goal:** Trade NIFTY options (NFO) when RSI crosses its smoothed EMA on 5-minute candles.
 
@@ -37,19 +41,20 @@ This repository includes a live NIFTY 50 options trading strategy that uses the 
 
 - **Exchange / instruments:** Strategy focuses on NIFTY options on the NFO exchange and only considers the nearest/current expiry option strikes.
 
-- **Order logic:** On a bullish cross (RSI crosses above RSI_EMA) the bot places a CE buy order; on a bearish cross (RSI crosses below RSI_EMA) it places a PE buy order. It selects an option whose LTP is close to the configured premium (default: ₹180) and places target & stop orders.
+- **Order logic:** On a bullish cross (RSI crosses above RSI_EMA) the bot places a CE buy order; on a bearish cross (RSI crosses below RSI_EMA) it places a PE buy order. It selects an option whose LTP is close to the configured premium (default: ₹90) and places target & stop orders.
 
-- **Target/Stop:** Target profit = +20% from entry; Stop loss = -5% from entry (configurable in `src/strategies/nifty-rsi-trader.ts`).
+- **Target/Stop:** Target profit = +50% from entry; Stop loss = -20% from entry; Trailing stop = -15% from entry (configurable in `src/strategies/config/morning-strategy-config.ts`).
 
-- **Exit handling:** On opposite signal, the bot cancels target/stop GTTs and squares off the existing position.
+- **Exit handling:** Positions exit only when target (+50%), stop loss (-20%), trailing stop (-15%), momentum fading (+15% in 20min), or session time limits are hit. Opposite signals do NOT trigger exits - positions are held until risk management rules activate.
 
 
 **Key files & modules**
-- `src/strategies/nifty-rsi-trader.ts`: Main strategy loop, 5-minute boundary alignment, pre-configured constants (RSI/EMA lengths, target premium). [See file](src/strategies/nifty-rsi-trader.ts)
-- `src/strategies/lib/indicators.ts`: Implements the Wilder RSI and EMA calculation used by the strategy. [See file](src/strategies/lib/indicators.ts)
-- `src/services/stocks/yahoo.ts`: Yahoo wrapper that calls `yahoo-finance2` `chart()` API and returns OHLC bars. [See file](src/services/stocks/yahoo.ts)
+- `src/strategies/morning-strategy.ts`: Main dual-session strategy (Session 1: 9:25-11:00 AM, Session 2: 12:30-2:00 PM), 5-minute candles, RSI/EMA signals with ADX filter. [See file](src/strategies/morning-strategy.ts)
+- `src/strategies/config/morning-strategy-config.ts`: Strategy configuration (session times, RSI/EMA/ADX parameters, risk management settings). [See file](src/strategies/config/morning-strategy-config.ts)
+- `src/strategies/lib/indicators.ts`: Implements the Wilder RSI, EMA, and ADX calculation used by the strategy. [See file](src/strategies/lib/indicators.ts)
 - `src/services/stocks/stocklist.ts`: Option chain and quotes lookup used to find option instruments (restricted to `NFO` exchange & `NIFTY` instruments). [See file](src/services/stocks/stocklist.ts)
-- `src/strategies/lib/order-handler.ts`: Contains `placeEntryAndGTT` and `cancelGttAndSquareOff` helpers using Shoonya order APIs. [See file](src/strategies/lib/order-handler.ts)
+- `src/strategies/lib/order-handler.ts`: Contains order placement and position management helpers using Shoonya order APIs. [See file](src/strategies/lib/order-handler.ts)
+- `src/strategies/lib/position-monitor.ts`: Monitors positions for target, stop loss, trailing stop, momentum fading, and session time exits. [See file](src/strategies/lib/position-monitor.ts)
 - `src/strategies/scenarios/bullish.ts` and `src/strategies/scenarios/bearish.ts`: Encapsulate strategy behavior for bullish/bearish entry logic. [See files](src/strategies/scenarios/bullish.ts) [See file](src/strategies/scenarios/bearish.ts)
 
 **Configuration & Environment**
@@ -70,6 +75,16 @@ npm start
 ```bash
 npm run rsi:trade
 ```
+
+**Yahoo NIFTY RSI Daemon**
+
+There's a small tool that fetches NIFTY 5-minute bars from Yahoo Finance and prints RSI(14) and a 21-period EMA of the RSI at every 5-minute boundary:
+
+- Script: `src/tools/yahoo_nifty_rsi_daemon.ts`
+- Run: `npm run yahoo:nifty:rsi`
+- Config: the daemon fetches 5m bars for `^NSEI` from Yahoo Finance; set `DATA_SYMBOL` to change the symbol.
+- Behavior: this tool uses Yahoo's public chart API to get 5m bars and prints RSI(14) and a 21-period EMA of RSI every 5 minutes. It requires no provider API keys.
+- Note: External providers may have rate limits and API key requirements; prefer TwelveData for reliable intraday data and set `DATA_SYMBOL` to the provider’s NIFTY symbol if required.
 
 **Behavior & Safety**
 - The strategy is live by default and will attempt to place real orders. Please use a test/pre-production account or reduce lot sizes while debugging. You are responsible for risk management.

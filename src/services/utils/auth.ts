@@ -18,14 +18,22 @@ interface AuthConfig {
   imei: string;
 }
 
+// Function to force token refresh (called when session expires)
+export const forceTokenRefresh = () => {
+  globalToken = null;
+  tokenExpiry = null;
+  console.log('Forced token refresh - cleared cached session');
+};
+
 // Function to authenticate and retrieve a token
-const rest_authenticate = async (config: AuthConfig): Promise<string> => {
+const rest_authenticate = async (config: AuthConfig, forceRefresh = false): Promise<string> => {
   try {
-    //Check if the token is still valid
-    if (globalToken && tokenExpiry && new Date() < tokenExpiry) {
+    // Check if the token is still valid (unless force refresh)
+    if (!forceRefresh && globalToken && tokenExpiry && new Date() < tokenExpiry) {
       return globalToken;
     }
 
+    console.log('Authenticating with Shoonya API...');
     const pwd = sha256(config.password).toString();
     const u_app_key = `${config.id}|${config.api_key}`;
     const app_key = sha256(u_app_key).toString();
@@ -52,11 +60,14 @@ const rest_authenticate = async (config: AuthConfig): Promise<string> => {
 
     if (data) {
       globalToken = data; // Store the token globally
-      tokenExpiry = new Date(new Date().getTime() + 15 * 60 * 1000); // Set expiry to 15 minutes
+      tokenExpiry = new Date(new Date().getTime() + 12 * 60 * 1000); // Set expiry to 12 minutes (safer than 15)
+      console.log('✓ Authentication successful, token cached until', tokenExpiry.toLocaleTimeString());
     }
     return data;
   } catch (err: any) {
     console.error("Error in authentication:", err);
+    globalToken = null;
+    tokenExpiry = null;
     return "";
   }
 };

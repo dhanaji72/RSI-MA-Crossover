@@ -2,11 +2,17 @@
   "name": "finvasia",
   "version": "1.0.0",
   "scripts": {
-    "start": "node build/index.js",
-    "build": "tsc",
-    "dev": "ts-node src/index.ts",
-    "rsi:trade": "ts-node src/strategies/nifty-rsi-trader.ts",
-    "coi:run": "ts-node src/oc_coi_calc.ts"
+    "start": "node --max-old-space-size=4096 node_modules/ts-node/dist/bin.js --transpile-only src/index.ts",
+    "start:prod": "node --max-old-space-size=2048 --optimize-for-size --gc-interval=100 build/index.js",
+    "build": "node --max-old-space-size=8192 node_modules/typescript/lib/tsc.js -p tsconfig.json --noCheck --pretty false",
+    "build:check": "node --max-old-space-size=16384 --optimize-for-size node_modules/typescript/lib/tsc.js -p tsconfig.json --noEmit --pretty false",
+    "build:prod": "npm run clean && node --max-old-space-size=8192 node_modules/typescript/lib/tsc.js -p tsconfig.json --noCheck --pretty false",
+    "dev": "node --max-old-space-size=4096 node_modules/ts-node/dist/bin.js --transpile-only src/index.ts",
+    "yahoo:nifty:rsi": "node --max-old-space-size=4096 node_modules/ts-node/dist/bin.js --transpile-only src/tools/yahoo_nifty_rsi_daemon.ts",
+    "strategy:morning": "node --max-old-space-size=4096 node_modules/ts-node/dist/bin.js --transpile-only src/strategies/morning-strategy.ts",
+    "strategy:main": "node --max-old-space-size=4096 node_modules/ts-node/dist/bin.js --transpile-only src/strategies/main-strategy.ts",
+    "clean": "powershell -NoProfile -Command \"if (Test-Path build) { Remove-Item -Recurse -Force build }; if (Test-Path tsconfig.tsbuildinfo) { Remove-Item -Force tsconfig.tsbuildinfo }\"",
+    "update:atm": "node --max-old-space-size=4096 node_modules/ts-node/dist/bin.js --transpile-only src/updateATMFromAPI.ts"
   },
   "keywords": [],
   "author": "",
@@ -14,6 +20,7 @@
   "description": "",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.10.1",
+    "@types/ws": "^8.18.1",
     "adm-zip": "^0.5.16",
     "axios": "^1.9.0",
     "crypto-js": "^4.2.0",
@@ -25,6 +32,7 @@
     "speakeasy": "^2.0.0",
     "tough-cookie": "^6.0.0",
     "undici": "^7.16.0",
+    "ws": "^8.18.3",
     "yahoo-finance2": "^3.10.2",
     "zod": "^3.24.3",
     "zod-to-json-schema": "^3.24.5"
@@ -34,7 +42,7 @@
     "@types/crypto-js": "^4.2.2",
     "@types/express": "^5.0.1",
     "@types/luxon": "^3.7.1",
-    "@types/node": "^25.0.1",
+    "@types/node": "^25.0.2",
     "@types/node-cron": "^3.0.11",
     "@types/speakeasy": "^2.0.10",
     "ts-node": "^10.9.2",

@@ -1,6 +1,7 @@
 import Config from "../config/config";
 import axios from "axios";
 import { rest_authenticate } from "../utils/auth";
+import { DateTime } from 'luxon';
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
@@ -24,6 +25,8 @@ interface StockListParams {
   optionType?: string; // CE, PE
   expiryMonth?: string; // May, Jun, etc.
   expiryYear?: string; // 2025, etc.
+  weeklyOnly?: boolean; // Restrict to weekly expiries (Tuesday) within ~10 days
+  exactExpiry?: string; // e.g., '16-DEC-2025' to target a specific expiry date
 }
 
 interface StockListResponse {
@@ -40,6 +43,54 @@ interface StockListResponse {
   status?: string;
   message?: string;
 }
+
+// IST helpers
+function nowIST(): DateTime { return DateTime.now().setZone('Asia/Kolkata'); }
+function parseExpiryIST(raw: string): DateTime | null {
+  if (!raw) return null;
+  // Try common formats from Shoonya like '23-DEC-2025'
+  let dt = DateTime.fromFormat(raw.trim(), 'dd-LLL-yyyy', { zone: 'Asia/Kolkata', locale: 'en' });
+  if (!dt.isValid) {
+    // Try ISO or JS Date parse fallback in IST
+    const tryIso = DateTime.fromISO(raw, { zone: 'Asia/Kolkata' });
+    if (tryIso.isValid) dt = tryIso;
+  }
+  return dt.isValid ? dt : null;
+}
+function isTuesdayIST(dt: DateTime): boolean { return dt.setZone('Asia/Kolkata').weekday === 2; }
+function toISODateIST(dt: DateTime): string { return dt.setZone('Asia/Kolkata').toISODate()!; }
+
+// Helper: fetch weekly NIFTY instruments with fallback to next week
+export async function getWeeklyWithFallback(params: {
+  query: string;
+  exchange: string;
+  optionType?: string;
+}): Promise<StockListResponse> {
+  const { query, exchange, optionType } = params;
+  const base = nowIST().startOf('day');
+  const tuesdays: DateTime[] = [];
+  for (let i = 1; i <= 14 && tuesdays.length < 2; i++) {
+    const d = base.plus({ days: i });
+    if (d.weekday === 2) tuesdays.push(d);
+  }
+  const fmt = (d: DateTime) => d.toFormat('dd-LLL-yyyy').toUpperCase();
+
+  // Try current Tuesday first
+  const currentExpiry = tuesdays[0] ? fmt(tuesdays[0]) : undefined;
+  if (currentExpiry) {
+    const res = await getStockList({ query, exchange, optionType, exactExpiry: currentExpiry, limit: 500 });
+    if (res.stat === 'Ok' && Array.isArray(res.values) && res.values.length > 0) return res;
+  }
+  // Fallback to next Tuesday
+  const nextExpiry = tuesdays[1] ? fmt(tuesdays[1]) : undefined;
+  if (nextExpiry) {
+    const res = await getStockList({ query, exchange, optionType, exactExpiry: nextExpiry, limit: 500 });
+    if (res.stat === 'Ok' && Array.isArray(res.values) && res.values.length > 0) return res;
+  }
+  // Final fallback: weeklyOnly filter (within 10 days)
+  return getStockList({ query, exchange, optionType, weeklyOnly: true, limit: 500 });
+}
+
 const getStockList = async ({
   query,
   exchange,
@@ -47,6 +98,8 @@ const getStockList = async ({
   optionType,
   expiryMonth,
   expiryYear,
+  weeklyOnly,
+  exactExpiry,
   strikePrice,
   minStrike,
   maxStrike,
@@ -146,6 +199,29 @@ const getStockList = async ({
             }
           }
 
+          // Weekly-only filter: Tuesday expiry within next 10 days (IST)
+          if (weeklyOnly) {
+            const ex = instrument.Expiry || instrument.expiry || instrument.ExpiryDate;
+            if (!ex) return false;
+            const dt = parseExpiryIST(ex);
+            if (!dt) return false;
+            if (!isTuesdayIST(dt)) return false;
+            const today = nowIST().startOf('day');
+            const expiry = dt.startOf('day');
+            const diffDays = expiry.diff(today, 'days').days;
+            if (!(diffDays > 0 && diffDays <= 10)) return false;
+          }
+
+          // Exact expiry date filter if provided (supports formats like '16-DEC-2025') using IST
+          if (exactExpiry) {
+            const ex = instrument.Expiry || instrument.expiry || instrument.ExpiryDate;
+            if (!ex) return false;
+            const norm = (s: string) => {
+              const p = parseExpiryIST(s);
+              return p ? p.toFormat('dd-LLL-yyyy').toUpperCase() : s.toUpperCase().replace(/\s+/g, '-');
+            };
+            if (norm(ex) !== norm(exactExpiry)) return false;
+          }
           return true;
         });
         
@@ -233,7 +309,36 @@ const getStockList = async ({
     const stockListResponse = await axios.post(conf.StockList_URL, payload);
 
     if (stockListResponse.data["stat"] === "Ok") {
-      const data = stockListResponse.data;
+      let data = stockListResponse.data;
+      // Apply weekly-only client-side filter if requested (IST)
+      if (weeklyOnly && Array.isArray(data.values)) {
+        const today = nowIST().startOf('day');
+        const filtered = data.values.filter((instrument: any) => {
+          const ex = instrument.Expiry || instrument.expiry || instrument.ExpiryDate;
+          if (!ex) return false;
+          const dt = parseExpiryIST(ex);
+          if (!dt) return false;
+          if (!isTuesdayIST(dt)) return false;
+          const diffDays = dt.startOf('day').diff(today, 'days').days;
+          return diffDays > 0 && diffDays <= 10;
+        });
+        data = { ...data, values: filtered };
+      }
+
+      // Apply exact expiry client-side filter if requested (IST)
+      if (exactExpiry && Array.isArray(data.values)) {
+        const normalize = (s: string) => {
+          const p = parseExpiryIST(s);
+          return p ? p.toFormat('dd-LLL-yyyy').toUpperCase() : s.toUpperCase().replace(/\s+/g, '-');
+        };
+        const target = normalize(exactExpiry);
+        const filtered = data.values.filter((instrument: any) => {
+          const ex = instrument.Expiry || instrument.expiry || instrument.ExpiryDate;
+          if (!ex) return false;
+          return normalize(ex) === target;
+        });
+        data = { ...data, values: filtered };
+      }
       return data;
     } else {
       return stockListResponse.data;
@@ -312,7 +417,32 @@ const getQuotes = async (params: QuotesParams): Promise<QuotesResponse> => {
     try {
       const quotesResponse = await axios.post(conf.GET_QUOTES_URL, payload);
       console.log('Quotes response status:', quotesResponse.status);
-      return quotesResponse.data;
+
+      // Handle empty 200 responses or unexpected payload shapes
+      if (!quotesResponse.data || (typeof quotesResponse.data === 'object' && Object.keys(quotesResponse.data).length === 0)) {
+        console.warn('Quotes API returned 200 but empty body');
+        return { stat: 'Not_Ok', message: 'Empty response body' };
+      }
+
+      // Normalize common response shapes into an easy-to-use object
+      const d: any = quotesResponse.data;
+      // sometimes the real payload is nested under properties like 'data' or 'values'
+      const payloadCandidate = d.data ?? d.values ?? d.result ?? d;
+
+      // If API signals error inside a 200 payload
+      if (payloadCandidate && (payloadCandidate.stat === 'Not_Ok' || payloadCandidate.stat === 'Not_Ok' || payloadCandidate.message || payloadCandidate.emsg)) {
+        // Return original payload so callers can inspect emsg/message
+        return payloadCandidate;
+      }
+
+      // If the provider returns an array or object with price keys, return it unchanged but add normalized fields
+      const normalized: any = Array.isArray(payloadCandidate) ? payloadCandidate[0] ?? {} : { ...payloadCandidate };
+
+      // common mappings
+      normalized.ltp = normalized.ltp ?? normalized.LTP ?? normalized.last_price ?? normalized.lastPrice ?? normalized.last ?? normalized.lp ?? normalized.lastTradedPrice ?? normalized.LastTradedPrice;
+      normalized.volume = normalized.volume ?? normalized.Volume ?? normalized.v ?? normalized.vol ?? normalized.totalVolume;
+
+      return normalized;
     } catch (error: any) {
       console.error('Error in API request:', error.message);
       if (error.response) {
@@ -343,9 +473,22 @@ const getQuotes = async (params: QuotesParams): Promise<QuotesResponse> => {
 
     console.log('Authentication successful, token length:', token.length);
 
-    // First attempt
-    let response = await makeRequest(token);
+    // First attempt with a few retries in case API returns empty 200 or transient errors
+    const maxAttempts = 3;
+    let attempt = 0;
+    let response: any = null;
+    while (attempt < maxAttempts) {
+      attempt += 1;
+      response = await makeRequest(token);
+      // Accept a response that has price info or is explicitly Ok
+      if (response && (response.ltp !== undefined || response.LTP !== undefined || response.stat === 'Ok')) {
+        return response;
+      }
+      console.warn(`Quotes attempt ${attempt} did not return usable data, retrying...`);
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
 
+    // Return the last response (likely an error payload) for callers to inspect
     return response;
 
   } catch (error: any) {
@@ -359,4 +502,4 @@ const getQuotes = async (params: QuotesParams): Promise<QuotesResponse> => {
 };
 
 
-export { getStockList, getQuotes };
+export { getStockList, getQuotes, getWeeklyWithFallback };

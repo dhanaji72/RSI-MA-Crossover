@@ -1,11 +1,8 @@
 import express from "express";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import cron from 'node-cron';
+import fs from 'fs';
+import path from 'path';
+import axios from 'axios';
+import AdmZip from 'adm-zip';
 import { z } from "zod";
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getProfile } from "./services/users/profile";
@@ -13,8 +10,20 @@ import { checkBalance } from "./services/users/balance";
 import { getWatchlist } from "./services/stocks/watchlist";
 import { getQuotes, getStockList } from "./services/stocks/stocklist";
 import { cancelOrder, checkOrderStatus, getHoldings, getOrderBook, getOrderMargin, getPositions, placeOrder , getTradeBook, modifyOrder,getOrderHistory} from "./services/orders/order";
-import { startNiftyRsiStrategy } from './strategies/nifty-rsi-trader';
-import { updateInstruments } from './updateInstruments';
+import { startMorningStrategy } from './strategies/morning-strategy';
+import { MORNING_STRATEGY_CONFIG } from './strategies/config/morning-strategy-config';
+import { updateATMInstruments } from './updateATMFromAPI';
+
+// Wrap in async IIFE to handle ESM imports
+(async () => {
+  // ESM-only MCP SDK: load dynamically to avoid CJS/ESM mismatch under ts-node
+  const serverMod = await import("@modelcontextprotocol/sdk/server/index.js");
+  const sseMod = await import("@modelcontextprotocol/sdk/server/sse.js");
+  const typesMod = await import("@modelcontextprotocol/sdk/types.js");
+  const Server = serverMod.Server;
+  const SSEServerTransport = sseMod.SSEServerTransport;
+  const CallToolRequestSchema = typesMod.CallToolRequestSchema;
+  const ListToolsRequestSchema = typesMod.ListToolsRequestSchema;
 
 const server = new Server(
   {
@@ -856,11 +865,6 @@ app.get('/', async (req, res) => {
   
   console.log(`New SSE connection established: ${transport.sessionId}`);
   
-  // res.on("close", () => {
-  //   console.log(`SSE connection closed: ${transport.sessionId}`);
-  //   delete sseTransports[transport.sessionId];
-  // });
-  
   await server.connect(transport);
 });
 
@@ -875,26 +879,144 @@ app.post('/messages', async (req, res) => {
     res.status(400).send('No transport found for sessionId');
   }
 });
-// Schedule daily at 2 AM
-cron.schedule('0 2 * * *', async () => {
-  console.log('Running scheduled instrument data update...');
+
+// Helper: get current time in IST minutes
+function getIstMinutes(): number {
+  const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  return nowIST.getHours() * 60 + nowIST.getMinutes();
+}
+
+// Helper: sleep
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Track last day when we triggered a pre-market restart (IST date string)
+let lastPremarketRestartDate: string | null = null;
+let isPremarketRestartRunning = false;
+
+// Watcher: when time reaches configured pre-market restart time (e.g. 9:10 AM IST),
+// rerun the startup routine (download symbols, update instruments, start strategy)
+// without exiting the main process. This "restarts" the strategy inside the
+// long-running MCP server.
+function startPremarketRestartWatcher() {
+  const checkIntervalMs = 30_000; // check every 30 seconds
+
+  setInterval(() => {
+    try {
+      const nowIST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const todayIso = nowIST.toISOString().slice(0, 10);
+      const currentMinutes = nowIST.getHours() * 60 + nowIST.getMinutes();
+
+      const restartMinutes = MORNING_STRATEGY_CONFIG.PREMARKET_RESTART_HOUR * 60 + MORNING_STRATEGY_CONFIG.PREMARKET_RESTART_MINUTE;
+
+      // Trigger once per day, within a small window after the configured time
+      if (
+        currentMinutes >= restartMinutes &&
+        currentMinutes < restartMinutes + 5 &&
+        lastPremarketRestartDate !== todayIso
+      ) {
+        const hh = MORNING_STRATEGY_CONFIG.PREMARKET_RESTART_HOUR;
+        const mm = MORNING_STRATEGY_CONFIG.PREMARKET_RESTART_MINUTE.toString().padStart(2, '0');
+        console.log(`\n⏰ Premarket restart time reached (${hh}:${mm} IST) - restarting instruments and strategy...`);
+        lastPremarketRestartDate = todayIso;
+
+        if (!isPremarketRestartRunning) {
+          isPremarketRestartRunning = true;
+          startupRoutine()
+            .catch(err => {
+              console.error('Error during premarket restart startupRoutine:', err);
+            })
+            .finally(() => {
+              isPremarketRestartRunning = false;
+            });
+        }
+      }
+    } catch (err) {
+      console.error('Error in premarket restart watcher:', err);
+    }
+  }, checkIntervalMs);
+}
+
+// Download latest NFO_symbols.txt from Shoonya ZIP URL
+async function downloadNfoSymbols(): Promise<void> {
   try {
-    await updateInstruments();
-    console.log('Instrument data update completed successfully');
-  } catch (error) {
-    console.error('Instrument data update failed:', error);
+    const zipUrl = 'https://api.shoonya.com/NFO_symbols.txt.zip';
+    console.log('Downloading latest NFO_symbols.txt ZIP from Shoonya...');
+
+    const response = await axios.get<ArrayBuffer>(zipUrl, { responseType: 'arraybuffer' });
+    const zipBuffer = Buffer.from(response.data);
+    const zip = new AdmZip(zipBuffer);
+
+    const entry = zip
+      .getEntries()
+      .find(e => e.entryName.toLowerCase().includes('nfo_symbols.txt'));
+
+    if (!entry) {
+      throw new Error('NFO_symbols.txt not found inside downloaded ZIP');
+    }
+
+    const txtContent = entry.getData().toString('utf8');
+
+    // Save where updateATMFromAPI.ts expects it: projectRoot/src/NFO_symbols.txt
+    const outputPath = path.join(__dirname, '..', 'src', 'NFO_symbols.txt');
+    await fs.promises.writeFile(outputPath, txtContent);
+    console.log('✓ Downloaded and extracted NFO_symbols.txt to', outputPath);
+  } catch (err) {
+    console.error('Failed to download NFO_symbols.txt:', err);
+    console.log('Proceeding with existing NFO_symbols.txt file if available');
   }
+}
+
+// Perform startup routine: refresh instruments and start strategy based on time
+async function startupRoutine() {
+  console.log('Running startup routine: download symbols, update instruments, and start strategy if within session...');
+
+  // Always refresh NFO symbol master on npm start
+  await downloadNfoSymbols();
+
+  // Update instruments with live ATM price before starting strategy
+  try {
+    console.log('Updating instruments with live NIFTY ATM price...');
+    await updateATMInstruments();
+    console.log('Instruments updated successfully');
+  } catch (err) {
+    console.error('Failed to update instruments:', err);
+    console.log('Using existing instruments from merged_instruments.json');
+  }
+
+  const nowMinutes = getIstMinutes();
+  const sessionStart = MORNING_STRATEGY_CONFIG.SESSION_START_HOUR * 60 + MORNING_STRATEGY_CONFIG.SESSION_START_MINUTE;
+  const sessionEnd = MORNING_STRATEGY_CONFIG.SESSION_END_HOUR * 60 + MORNING_STRATEGY_CONFIG.SESSION_END_MINUTE;
+
+  if (nowMinutes >= sessionEnd) {
+    console.log('Session window already passed; strategy will not be started.');
+    return;
+  }
+
+  // Start strategy even if we restarted in the middle of the session;
+  // the strategy itself will handle candle formation from 9:15 and
+  // new entries only during the configured session time.
+  try {
+    console.log('Starting Morning strategy...');
+    startMorningStrategy();
+  } catch (err) {
+    console.error('Failed to start Morning strategy:', err);
+  }
+}
+
+// Start the server
+const PORT = 3001;
+app.listen(PORT, async () => {
+  console.log(`Finvasia MCP Server running on http://localhost:${PORT}`);
+
+  // Ensure we restart cleanly at the configured premarket time even if
+  // the process is already running (e.g. managed by PM2 overnight).
+  startPremarketRestartWatcher();
+  await startupRoutine();
 });
 
-console.log('Scheduled Stock data updates enabled (daily at 2 AM)');
-// Start the server
-const PORT = 3000;
-app.listen(PORT, () => {
-  console.log(`Finvasia MCP Server running on http://localhost:${PORT}`);
-  // Start the NIFTY RSI strategy when the server is up
-  try {
-    startNiftyRsiStrategy();
-  } catch (err) {
-    console.error('Failed to start NIFTY RSI strategy:', err);
-  }
+})().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });

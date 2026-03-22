@@ -1,6 +1,6 @@
 import Config from '../config/config';
 import axios from 'axios';
-import { rest_authenticate } from '../utils/auth';
+import { rest_authenticate, forceTokenRefresh } from '../utils/auth';
 import 'dotenv/config';
 
 
@@ -31,6 +31,19 @@ interface CheckOrderStatusParams {
 
 const conf = new Config();
 
+// Validate current session token by calling a lightweight endpoint
+const validateSession = async (token: string, uid: string): Promise<boolean> => {
+  try {
+    if (!token || !uid) return false;
+    const payload = "jData=" + JSON.stringify({ uid }) + `&jKey=${token}`;
+    const resp = await axios.post(conf.UserDetails_URL, payload);
+    return resp?.data?.stat === 'Ok';
+  } catch (e: any) {
+    // Treat any failure here as invalid session to be safe
+    return false;
+  }
+};
+
 export const placeOrder = async (orderPayload: OrderPayload): Promise<any> => {
   const config: ConfigType = {
     id: process.env.ID || '',
@@ -42,7 +55,8 @@ export const placeOrder = async (orderPayload: OrderPayload): Promise<any> => {
   };
 
   try {
-    const token = await rest_authenticate(config);
+    // Step 1: get (cached) token
+    let token = await rest_authenticate(config);
     if (!token) {
       return "Token generation issue";
     }
@@ -50,11 +64,44 @@ export const placeOrder = async (orderPayload: OrderPayload): Promise<any> => {
     orderPayload.uid = config.id;
     orderPayload.actid = config.id;
 
+    // Step 2: pre-check session validity; if expired, refresh token proactively
+    const isValid = await validateSession(token, config.id);
+    if (!isValid) {
+      forceTokenRefresh();
+      token = await rest_authenticate(config, true);
+      if (!token) return "Token generation issue after refresh";
+    }
+
     const payload = "jData=" + JSON.stringify(orderPayload) + `&jKey=${token}`;
     const orderResponse = await axios.post(conf.placeOrder_URL, payload);
+    
+    // Check for session expiration
+    if (orderResponse.data?.stat === 'Not_Ok' && 
+        orderResponse.data?.emsg?.includes('Session Expired')) {
+      console.warn('Session expired, refreshing token and retrying...');
+      forceTokenRefresh();
+      
+      // Retry with fresh token
+      const newToken = await rest_authenticate(config, true);
+      if (!newToken) {
+        return "Token generation issue after refresh";
+      }
+      
+      const retryPayload = "jData=" + JSON.stringify(orderPayload) + `&jKey=${newToken}`;
+      const retryResponse = await axios.post(conf.placeOrder_URL, retryPayload);
+      return retryResponse.data;
+    }
+    
     return orderResponse.data;
   } catch (error: any) {
     console.error(error);
+    
+    // Check if error response indicates session expiration
+    if (error.response?.data?.emsg?.includes('Session Expired')) {
+      console.warn('Session expired in error handler, clearing token cache');
+      forceTokenRefresh();
+    }
+    
     return error.response?.data?.emsg || error.message || "An error occurred while placing the order.";
   }
 };
@@ -153,7 +200,6 @@ interface PositionsResponse {
 }
 
 export const getPositions = async (params: PositionParams = {}): Promise<Position[] | PositionsResponse> => {
-  console.log('Fetching positions book');
   const config: ConfigType = {
     id: process.env.ID || "",
     password: process.env.PASSWORD || "",
@@ -171,7 +217,8 @@ export const getPositions = async (params: PositionParams = {}): Promise<Positio
     }
 
     const values: Record<string, string> = {
-      uid: config.id
+      uid: config.id,
+      actid: config.id  // actid is required by PositionBook API
     };
 
     if (params.actid) values.actid = params.actid;
@@ -179,9 +226,7 @@ export const getPositions = async (params: PositionParams = {}): Promise<Positio
     let payload = 'jData=' + JSON.stringify(values);
     payload = payload + `&jKey=${token}`;
 
-    console.log('Getting positions with payload (sensitive data masked):', { ...values });
     const positionsResponse = await axios.post(conf.POSITIONS_URL, payload);
-    console.log('Positions response received');
 
     return positionsResponse.data;
   } catch (error: any) {
@@ -362,7 +407,6 @@ interface OrderBookResponse {
 }
 
 export const getOrderBook = async (params: OrderBookParams = {}): Promise<OrderBookResponse> => {
-  console.log('Fetching order book');
 
   // Get credentials from environment variables
   const config: ConfigType = {
@@ -400,9 +444,7 @@ export const getOrderBook = async (params: OrderBookParams = {}): Promise<OrderB
     let payload = 'jData=' + JSON.stringify(orderBookParams);
     payload = payload + `&jKey=${token}`;
 
-    console.log('Requesting order book with params:', orderBookParams);
     const orderbook_response = await axios.post(conf.ORDER_BOOK_URL, payload);
-    console.log('Order book response received');
 
     return orderbook_response.data;
   } catch (error: any) {
