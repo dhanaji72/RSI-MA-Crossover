@@ -137,7 +137,7 @@ export async function monitorAndSquareOffLosses(
     if (!activePosition.entryTime) {
       activePosition.entryTime = Date.now();
     }
-    
+  
     // ===== SESSION-BASED TIME EXIT =====
     // Force exit at session end time if target/stop not hit
     if (activePosition.session) {
@@ -508,9 +508,28 @@ export async function monitorAndSquareOffLosses(
     }
 
     // ===== SCENARIO 4: TRAILING STOP LOSS BREACHED (Protect Profit) =====
-    // Calculate trailing stop: highest price - (trailingStopPercent of original entry price)
+    // Calculate trailing stop: highest price - (dynamic trailing stop % of original entry price)
     const entryPrice = activePosition.entryPrice!;
-    const trailingStopPrice = roundToTick(activePosition.highestPrice - (entryPrice * trailingStopPercent / 100));
+
+    // Optionally tighten trailing stop once profit reaches a configurable threshold
+    const profitFromEntryPercent = ((currentLtp - entryPrice) / entryPrice) * 100;
+    let effectiveTrailingPercent = trailingStopPercent;
+
+    const tightenThreshold = MORNING_STRATEGY_CONFIG.TRAILING_STOP_TIGHTEN_THRESHOLD_PERCENT;
+    const tightenedPercent = MORNING_STRATEGY_CONFIG.TRAILING_STOP_TIGHTENED_PERCENT;
+
+    if (
+      typeof tightenThreshold === 'number' &&
+      typeof tightenedPercent === 'number' &&
+      tightenThreshold > 0 &&
+      tightenedPercent > 0 &&
+      profitFromEntryPercent >= tightenThreshold &&
+      tightenedPercent !== trailingStopPercent
+    ) {
+      effectiveTrailingPercent = tightenedPercent;
+    }
+
+    const trailingStopPrice = roundToTick(activePosition.highestPrice - (entryPrice * effectiveTrailingPercent / 100));
     const initialStopPrice = roundToTick(avgPrice * (1 - stopPercent / 100));
     
     // If profit is locked, ensure stop is never below entry + minProfitLockPoints

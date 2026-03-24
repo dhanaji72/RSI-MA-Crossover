@@ -21,8 +21,8 @@ interface ActivePosition {
 
 /**
  * Detect bullish signal
- * Condition 1: RSI crosses above RSI-EMA with RSI increase of at least 3 points (All sessions)
- * Condition 2: RSI crosses above threshold (65) with RSI increase of at least 3 points (Session 1 ONLY)
+ * Condition 1: RSI crosses above RSI-EMA with RSI increase of at least `minRsiMovePoints` (All sessions)
+ * Condition 2: RSI crosses above threshold (65) with RSI increase of at least `minRsiMovePoints` (Session 1 ONLY)
  */
 function isRsiEmaBullishCrossover(
   currentRsi: number,
@@ -31,7 +31,8 @@ function isRsiEmaBullishCrossover(
   prevRsiEma: number,
   minRsiEmaDiff: number = 3,
   rsiOverboughtThreshold: number = 65,
-  allowThresholdSignal: boolean = true
+  allowThresholdSignal: boolean = true,
+  minRsiMovePoints: number = 3
 ): boolean {
   // Check for valid values
   if (Number.isNaN(currentRsi) || Number.isNaN(currentRsiEma) || Number.isNaN(prevRsi) || Number.isNaN(prevRsiEma)) {
@@ -42,12 +43,12 @@ function isRsiEmaBullishCrossover(
   const crossoverAbove = prevRsi <= prevRsiEma && currentRsi > currentRsiEma;
   const rsiEmaDiff = Math.abs(currentRsi - currentRsiEma);
   const rsiIncrease = currentRsi - prevRsi; // RSI increase
-  const hasRsiEmaCrossover = crossoverAbove && rsiEmaDiff > minRsiEmaDiff && rsiIncrease >= 3;
+  const hasRsiEmaCrossover = crossoverAbove && rsiEmaDiff > minRsiEmaDiff && rsiIncrease >= minRsiMovePoints;
   
   // Condition 2: RSI Threshold Crossover (crosses above overbought level) with RSI movement check
   // Only allowed in Session 1 (controlled by allowThresholdSignal parameter)
   const rsiThresholdCrossover = prevRsi <= rsiOverboughtThreshold && currentRsi > rsiOverboughtThreshold;
-  const hasRsiThresholdCrossover = allowThresholdSignal && rsiThresholdCrossover && Math.abs(currentRsi - currentRsiEma) > minRsiEmaDiff && rsiIncrease >= 3;
+  const hasRsiThresholdCrossover = allowThresholdSignal && rsiThresholdCrossover && Math.abs(currentRsi - currentRsiEma) > minRsiEmaDiff && rsiIncrease >= minRsiMovePoints;
   
   // Return true if EITHER condition is met
   return hasRsiEmaCrossover || hasRsiThresholdCrossover;
@@ -55,7 +56,7 @@ function isRsiEmaBullishCrossover(
 
 /**
  * Detect bearish signal
- * Condition 1: RSI crosses below RSI-EMA with RSI decrease of at least 3 points (All sessions)
+ * Condition 1: RSI crosses below RSI-EMA with RSI decrease of at least `minRsiMovePoints` (All sessions)
  *              AND RSI < 60 when above 50 OR RSI < 35 when below 50
  * Condition 2: RSI crosses below threshold (40) with RSI decrease of at least 3 points (Session 1 ONLY)
  */
@@ -66,7 +67,8 @@ function isRsiEmaBearishCrossover(
   prevRsiEma: number,
   minRsiEmaDiff: number = 3,
   rsiOversoldThreshold: number = 40,
-  allowThresholdSignal: boolean = true
+  allowThresholdSignal: boolean = true,
+  minRsiMovePoints: number = 3
 ): boolean {
   // Check for valid values
   if (Number.isNaN(currentRsi) || Number.isNaN(currentRsiEma) || Number.isNaN(prevRsi) || Number.isNaN(prevRsiEma)) {
@@ -86,12 +88,12 @@ function isRsiEmaBearishCrossover(
     rsiLevelCondition = currentRsi < 35;
   }
   
-  const hasRsiEmaCrossover = crossoverBelow && rsiEmaDiff > minRsiEmaDiff && rsiDecrease >= 3 && rsiLevelCondition;
+  const hasRsiEmaCrossover = crossoverBelow && rsiEmaDiff > minRsiEmaDiff && rsiDecrease >= minRsiMovePoints && rsiLevelCondition;
   
   // Condition 2: RSI Threshold Crossover (crosses below oversold level) with RSI movement check
   // Only allowed in Session 1 (controlled by allowThresholdSignal parameter)
   const rsiThresholdCrossover = prevRsi >= rsiOversoldThreshold && currentRsi < rsiOversoldThreshold;
-  const hasRsiThresholdCrossover = allowThresholdSignal && rsiThresholdCrossover && Math.abs(currentRsi - currentRsiEma) > minRsiEmaDiff && rsiDecrease >= 3;
+  const hasRsiThresholdCrossover = allowThresholdSignal && rsiThresholdCrossover && Math.abs(currentRsi - currentRsiEma) > minRsiEmaDiff && rsiDecrease >= minRsiMovePoints;
   
   // Return true if EITHER condition is met
   return hasRsiEmaCrossover || hasRsiThresholdCrossover;
@@ -270,10 +272,6 @@ export async function runMorningTradingLoop(config: MorningStrategyConfig, exist
   } : null;
   let lastCandleCount = getHybridCandles().length;
   
-  // Store previous candle's RSI and EMA values
-  let prevRsi: number | null = null;
-  let prevRsiEma: number | null = null;
-  
   console.log('\n🌅 MORNING STRATEGY STARTED');
   console.log(`📊 Candle formation: ${config.INTERVAL_MINUTES}-minute candles from 9:15 AM`);
   console.log(`📊 New positions: ${config.SESSION_START_HOUR}:${config.SESSION_START_MINUTE.toString().padStart(2, '0')} - ${config.SESSION_END_HOUR}:${config.SESSION_END_MINUTE.toString().padStart(2, '0')}`);
@@ -285,7 +283,11 @@ export async function runMorningTradingLoop(config: MorningStrategyConfig, exist
   console.log(`✅ All signals require: |RSI - RSI_EMA| > ${config.MIN_RSI_EMA_DIFF}`);
 
   console.log(`💰 Risk: Target +${config.TARGET_PERCENT}% | Initial Stop -${config.STOP_PERCENT}% | Trailing Stop -${config.TRAILING_STOP_PERCENT}%`);
-  console.log(`🔒 Profit Lock: When price hits +${config.MIN_PROFIT_LOCK_PERCENT}% of entry, stop is raised to entry +${config.LOCKED_PROFIT_PERCENT}% and trailing stop activates\n`);
+  if (config.TRAILING_STOP_TIGHTEN_THRESHOLD_PERCENT > 0 && config.TRAILING_STOP_TIGHTENED_PERCENT > 0) {
+    console.log(`   Trailing will tighten to -${config.TRAILING_STOP_TIGHTENED_PERCENT}% once profit reaches +${config.TRAILING_STOP_TIGHTEN_THRESHOLD_PERCENT}% of entry`);
+  }
+  console.log(`🔒 Profit Lock: When price hits +${config.MIN_PROFIT_LOCK_PERCENT}% of entry, stop is raised to entry +${config.LOCKED_PROFIT_PERCENT}% and trailing stop activates`);
+  console.log(`⏱️ Momentum Rule: After ${config.MOMENTUM_CHECK_MINUTES} minutes, position must be at least +${config.MOMENTUM_CHECK_PERCENT}% profit or it will be squared off\n`);
   
   while (true) {
     await sleep(config.LOOP_INTERVAL_MS);
@@ -323,15 +325,17 @@ export async function runMorningTradingLoop(config: MorningStrategyConfig, exist
     if (newCandleCompleted) {
       console.log(`\nNew ${config.INTERVAL_MINUTES}-minute candle completed`);
       
-      // Get current RSI and EMA values
+      // Get current and previous RSI/EMA values (strictly consecutive candles)
       const currentRsi = indicators.rsi;
       const currentRsiEma = indicators.rsiEma;
+      const prevRsi = indicators.prevRsi;
+      const prevRsiEma = indicators.prevRsiEma;
       
-      printIndicatorValues(config, indicators, prevRsi, prevRsiEma);
+      printIndicatorValues(config, indicators);
       lastCandleCount = currentCandleCount;
       
       // Check for signals only if we have previous values stored
-      if (prevRsi !== null && prevRsiEma !== null) {
+      if (!Number.isNaN(prevRsi) && !Number.isNaN(prevRsiEma)) {
         // Check if within trading session
         const inTradingSession = isWithinTradingSession(config);
         const currentSession = inTradingSession ? 1 : 0;
@@ -340,14 +344,15 @@ export async function runMorningTradingLoop(config: MorningStrategyConfig, exist
         const allowThresholdSignals = inTradingSession;
         
         // Detect RSI-EMA crossovers and RSI threshold crossovers
-        const rsiEmaBullishSignal = isRsiEmaBullishCrossover(
+        const rsiEmaBullishSignalRaw = isRsiEmaBullishCrossover(
           currentRsi,
           currentRsiEma,
           prevRsi,
           prevRsiEma,
           config.MIN_RSI_EMA_DIFF,
           config.RSI_OVERBOUGHT,
-          allowThresholdSignals
+          allowThresholdSignals,
+          config.MIN_RSI_MOVE_POINTS,
         );
         const rsiEmaBearishSignal = isRsiEmaBearishCrossover(
           currentRsi,
@@ -356,8 +361,20 @@ export async function runMorningTradingLoop(config: MorningStrategyConfig, exist
           prevRsiEma,
           config.MIN_RSI_EMA_DIFF,
           config.RSI_OVERSOLD,
-          allowThresholdSignals
+          allowThresholdSignals,
+          config.MIN_RSI_MOVE_POINTS,
         );
+
+        // Additional bullish filter: if RSI-EMA bullish crossover happens below 50,
+        // only allow it when current RSI is greater than configured minimum (default 35)
+        const minBullishRsiBelow50 = config.BULLISH_MIN_RSI_BELOW_50 ?? 35;
+        const isBullishCrossover = prevRsi <= prevRsiEma && currentRsi > currentRsiEma;
+        let rsiEmaBullishSignal = rsiEmaBullishSignalRaw;
+
+        if (rsiEmaBullishSignalRaw && isBullishCrossover && currentRsi < 50 && currentRsi <= minBullishRsiBelow50) {
+          rsiEmaBullishSignal = false;
+          console.log(`❌ BULLISH signal REJECTED - RSI ${currentRsi.toFixed(2)} below minimum ${minBullishRsiBelow50} for RSI-EMA crossover below 50`);
+        }
         
         // If we have an active position, only monitor for target/stop loss
         // Opposite signals are IGNORED - positions exit only on target or stop loss
@@ -379,12 +396,12 @@ export async function runMorningTradingLoop(config: MorningStrategyConfig, exist
             if (isRsiEmaCross) {
               console.log(`   Type: Condition 1 - RSI-EMA Crossover (Available in all sessions)`);
               console.log(`   RSI crossed above RSI-EMA: ${prevRsi.toFixed(2)} → ${currentRsi.toFixed(2)} (EMA: ${currentRsiEma.toFixed(2)})`);
-              console.log(`   RSI increase: ${(currentRsi - prevRsi).toFixed(2)} points (min: 3)`);
+              console.log(`   RSI increase: ${(currentRsi - prevRsi).toFixed(2)} points (min: ${config.MIN_RSI_MOVE_POINTS})`);
             }
             if (isRsiThresholdCross && allowThresholdSignals) {
               console.log(`   Type: Condition 2 - RSI Threshold Crossover (Session 1 ONLY)`);
               console.log(`   RSI crossed above ${config.RSI_OVERBOUGHT}: ${prevRsi.toFixed(2)} → ${currentRsi.toFixed(2)}`);
-              console.log(`   RSI increase: ${(currentRsi - prevRsi).toFixed(2)} points (min: 3)`);
+              console.log(`   RSI increase: ${(currentRsi - prevRsi).toFixed(2)} points (min: ${config.MIN_RSI_MOVE_POINTS})`);
             }
             console.log(`   RSI-EMA difference: ${Math.abs(currentRsi - currentRsiEma).toFixed(2)} (min: ${config.MIN_RSI_EMA_DIFF})`);
             
@@ -514,9 +531,8 @@ export async function runMorningTradingLoop(config: MorningStrategyConfig, exist
         console.log(`⏳ First candle - storing values for next signal check\n`);
       }
       
-      // Store current values as previous for next candle
-      prevRsi = currentRsi;
-      prevRsiEma = currentRsiEma;
+      // No manual prevRsi tracking needed; indicators already provide
+      // strictly previous-candle RSI/EMA values on each invocation.
     }
   }
 }

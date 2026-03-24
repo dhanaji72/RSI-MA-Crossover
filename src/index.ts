@@ -13,6 +13,7 @@ import { cancelOrder, checkOrderStatus, getHoldings, getOrderBook, getOrderMargi
 import { startMorningStrategy } from './strategies/morning-strategy';
 import { MORNING_STRATEGY_CONFIG } from './strategies/config/morning-strategy-config';
 import { updateATMInstruments } from './updateATMFromAPI';
+import { refreshMergedInstrumentsByPremium } from './services/stocks/instrument-premium-filter';
 
 // Wrap in async IIFE to handle ESM imports
 (async () => {
@@ -938,6 +939,66 @@ function startPremarketRestartWatcher() {
   }, checkIntervalMs);
 }
 
+// Periodically refresh merged_instruments.json based on live option premiums.
+// Starting from 9:15 AM IST, every ~27.5 minutes, filter instruments to keep
+// only those whose current premium lies within the configured range.
+let lastPremiumRefreshTimeMs: number | null = null;
+
+function startInstrumentPremiumRefreshWatcher() {
+  const checkIntervalMs = 60_000; // check every minute
+
+  // Use candle start as the logical beginning (typically 9:15 AM)
+  const startMinutes =
+    MORNING_STRATEGY_CONFIG.CANDLE_START_HOUR * 60 + MORNING_STRATEGY_CONFIG.CANDLE_START_MINUTE;
+  const endMinutes =
+    MORNING_STRATEGY_CONFIG.SESSION_EXIT_HOUR * 60 + MORNING_STRATEGY_CONFIG.SESSION_EXIT_MINUTE;
+
+  const refreshIntervalMinutes = 27.5;
+  const firstRefreshOffsetMinutes = 7; // 9:15 + 7 = 9:22 AM
+  const firstRefreshMinutes = startMinutes + firstRefreshOffsetMinutes;
+
+  setInterval(async () => {
+    try {
+      const nowIST = new Date(
+        new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
+      );
+      const currentMinutes = nowIST.getHours() * 60 + nowIST.getMinutes();
+
+      // Only run within the trading window
+      if (currentMinutes < startMinutes || currentMinutes > endMinutes) {
+        return;
+      }
+
+      const nowMs = nowIST.getTime();
+
+      // First run shortly after the window opens (or when process starts during the window)
+      if (lastPremiumRefreshTimeMs === null) {
+        // Ensure first refresh does not occur before 9:22 AM IST
+        if (currentMinutes < firstRefreshMinutes) {
+          return;
+        }
+        await refreshMergedInstrumentsByPremium({
+          minPremium: MORNING_STRATEGY_CONFIG.OPTION_PREMIUM_MIN,
+          maxPremium: MORNING_STRATEGY_CONFIG.OPTION_PREMIUM_MAX,
+        });
+        lastPremiumRefreshTimeMs = nowMs;
+        return;
+      }
+
+      const diffMinutes = (nowMs - lastPremiumRefreshTimeMs) / (1000 * 60);
+      if (diffMinutes >= refreshIntervalMinutes) {
+        await refreshMergedInstrumentsByPremium({
+          minPremium: MORNING_STRATEGY_CONFIG.OPTION_PREMIUM_MIN,
+          maxPremium: MORNING_STRATEGY_CONFIG.OPTION_PREMIUM_MAX,
+        });
+        lastPremiumRefreshTimeMs = nowMs;
+      }
+    } catch (err) {
+      console.error('Error in instrument premium refresh watcher:', err);
+    }
+  }, checkIntervalMs);
+}
+
 // Download latest NFO_symbols.txt from Shoonya ZIP URL
 async function downloadNfoSymbols(): Promise<void> {
   try {
@@ -1013,6 +1074,7 @@ app.listen(PORT, async () => {
   // Ensure we restart cleanly at the configured premarket time even if
   // the process is already running (e.g. managed by PM2 overnight).
   startPremarketRestartWatcher();
+  startInstrumentPremiumRefreshWatcher();
   await startupRoutine();
 });
 

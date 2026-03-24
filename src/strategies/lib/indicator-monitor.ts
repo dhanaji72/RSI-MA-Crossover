@@ -5,6 +5,8 @@ export interface IndicatorValues {
   rsi: number;
   rsiEma: number;
   adx: number;
+  prevRsi: number;
+  prevRsiEma: number;
   validRsiValues: number[];
   rsiEmaValues: number[];
 }
@@ -42,13 +44,22 @@ export function calculateCurrentIndicators(config: BaseIndicatorConfig): Indicat
   // Calculate ADX
   const adxValues = calculateADX(highs, lows, closes, config.ADX_LENGTH);
   
-  // Get the latest values
-  const latestRsi = rsiValues[rsiValues.length - 1];
-  const latestRsiEma = rsiEmaValues[rsiEmaValues.length - 1];
+  // Need at least two RSI/EMA values to compare consecutive candles
+  if (rsiValues.length < 2 || rsiEmaValues.length < 2) {
+    return null;
+  }
+
+  const lastIndex = rsiValues.length - 1;
+
+  // Get the latest and previous values (strictly consecutive candles)
+  const latestRsi = rsiValues[lastIndex];
+  const latestRsiEma = rsiEmaValues[lastIndex];
+  const prevRsi = rsiValues[lastIndex - 1];
+  const prevRsiEma = rsiEmaValues[lastIndex - 1];
   const latestAdx = adxValues[adxValues.length - 1];
   
   // Validate
-  if (isNaN(latestRsi) || isNaN(latestRsiEma) || isNaN(latestAdx)) {
+  if (isNaN(latestRsi) || isNaN(latestRsiEma) || isNaN(prevRsi) || isNaN(prevRsiEma) || isNaN(latestAdx)) {
     return null;
   }
   
@@ -59,6 +70,8 @@ export function calculateCurrentIndicators(config: BaseIndicatorConfig): Indicat
     rsi: latestRsi,
     rsiEma: latestRsiEma,
     adx: latestAdx,
+    prevRsi,
+    prevRsiEma,
     validRsiValues,
     rsiEmaValues: rsiEmaValues.filter(v => !isNaN(v))
   };
@@ -69,9 +82,7 @@ export function calculateCurrentIndicators(config: BaseIndicatorConfig): Indicat
  */
 export function printIndicatorValues(
   config: BaseIndicatorConfig, 
-  indicators: IndicatorValues,
-  prevRsi: number | null = null,
-  prevRsiEma: number | null = null
+  indicators: IndicatorValues
 ): void {
   const candles = getHybridCandles();
   
@@ -93,10 +104,10 @@ export function printIndicatorValues(
     hour12: true
   });
   
-  // Use provided previous values or fall back to array lookup
-  if (prevRsi !== null && prevRsiEma !== null) {
+  // Use previous candle values from indicators
+  if (!isNaN(indicators.prevRsi) && !isNaN(indicators.prevRsiEma)) {
     const prevCandle = candles.length > 1 ? candles[candles.length - 2] : null;
-    console.log(`Prev => [${previousTime}] RSI: ${prevRsi.toFixed(2)} | RSI-EMA: ${prevRsiEma.toFixed(2)}${prevCandle ? ` | Close: ${prevCandle.close.toFixed(2)}` : ''}`);
+    console.log(`Prev => [${previousTime}] RSI: ${indicators.prevRsi.toFixed(2)} | RSI-EMA: ${indicators.prevRsiEma.toFixed(2)}${prevCandle ? ` | Close: ${prevCandle.close.toFixed(2)}` : ''}`);
   }
   const currentCandle = candles.length > 0 ? candles[candles.length - 1] : null;
   console.log(`Curr => [${currentTime}] RSI: ${indicators.rsi.toFixed(2)} | RSI-EMA: ${indicators.rsiEma.toFixed(2)} | ADX: ${indicators.adx.toFixed(2)}${currentCandle ? ` | Close: ${currentCandle.close.toFixed(2)}` : ''}`);
