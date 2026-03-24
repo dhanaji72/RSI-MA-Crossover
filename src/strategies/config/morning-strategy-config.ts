@@ -55,7 +55,7 @@ export const MORNING_STRATEGY_CONFIG = {
   TRAILING_STOP_TIGHTEN_THRESHOLD_PERCENT: 30, // Once profit reaches +30% of entry, tighten trailing stop
   TRAILING_STOP_TIGHTENED_PERCENT: 10, // Tightened trailing stop at (highest price - 10% of entry price)
   MIN_PROFIT_LOCK_PERCENT: 10, // % move from entry required before profit lock starts
-  LOCKED_PROFIT_PERCENT: 5, // % of entry price to lock once profit lock triggers
+  LOCKED_PROFIT_PERCENT: 6, // % of entry price to lock once profit lock triggers
   EXISTING_TARGET_PERCENT: 50, // For existing positions
   EXISTING_STOP_PERCENT: 15, // For existing positions
   
